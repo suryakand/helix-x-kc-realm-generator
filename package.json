@@ -1,6 +1,6 @@
 {
   "name": "@helix-x/kc-realm-generator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive generator for multi-tenant Keycloak realm import files (organizations, permission bundles, M2M clients)",
   "license": "ISC",
   "type": "module",
