@@ -1,0 +1,149 @@
+name: Publish package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump applied AFTER publishing (prepares the next release)'
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+      target:
+        description: 'Where to publish: npmjs.org, the custom registry, or both (same version to each)'
+        type: choice
+        default: both
+        options: [both, npm, custom]
+      custom_registry:
+        description: 'Custom registry URL for this run (defaults to the CUSTOM_REGISTRY_URL repository variable)'
+        type: string
+        required: false
+
+# Pushes publish to both registries; the custom one is the CUSTOM_REGISTRY_URL
+# repository variable, with no built-in fallback, so a push fails (before
+# publishing anything) until it is set.
+env:
+  TARGET: ${{ inputs.target || 'both' }}
+  CUSTOM_REGISTRY_URL: ${{ inputs.custom_registry || vars.CUSTOM_REGISTRY_URL }}
+
+# One publish at a time: the job pushes a bump commit back to main, and a second
+# concurrent run would publish a version whose tag is already being created.
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    # The post-publish bump commit is pushed back to main and would otherwise
+    # trigger this workflow again in an endless loop.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Pushes from the default GITHUB_TOKEN do not re-trigger workflows,
+          # which is a second layer of loop protection on top of [skip ci].
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # No registry-url: .github/scripts/publish.mjs writes per-registry
+          # credentials itself.
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Plain ESM, no build step: the tests and a generator run are the gate.
+      - name: Test
+        run: npm test
+
+      - name: Generate the example realm
+        run: node generate-realm.mjs --preset example --out "$RUNNER_TEMP/realm.json"
+
+      - name: Resolve version
+        id: version
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CUSTOM_REGISTRY_AUTH: ${{ secrets.CUSTOM_REGISTRY_AUTH }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+          # Writes published=true only when every target already has this
+          # version, so re-running on a released commit does not fail, and a run
+          # where one registry was missed still publishes to that one. Also
+          # fails here, before anything is published, when the custom registry
+          # URL is missing.
+          node .github/scripts/publish.mjs --check "$TARGET"
+
+      # Written before publishing on purpose: once the version is on npm a re-run
+      # skips every step below, so a failure here must stop the run while it can
+      # still be retried. Built from commits, not pull requests, because main is
+      # pushed to directly and GitHub's --generate-notes would list nothing.
+      - name: Write release notes
+        if: steps.version.outputs.published == 'false'
+        run: |
+          node .github/scripts/release-notes.mjs > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Packs once and publishes that tarball to each target still missing the
+      # version, so both registries get the identical package.
+      - name: Publish
+        if: steps.version.outputs.published == 'false'
+        run: node .github/scripts/publish.mjs "$TARGET"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CUSTOM_REGISTRY_AUTH: ${{ secrets.CUSTOM_REGISTRY_AUTH }}
+
+      - name: Tag the release
+        if: steps.version.outputs.published == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Already there when a previous run published to one registry and
+          # failed on the other.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::$TAG already exists, not tagging again."
+            exit 0
+          fi
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        if: steps.version.outputs.published == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists."
+            exit 0
+          fi
+          gh release create "$TAG" --title "$TAG" --verify-tag \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Bump version for the next release
+        if: steps.version.outputs.published == 'false'
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "$BUMP" --no-git-tag-version
+          next=$(node -p "require('./package.json').version")
+          git add package.json package-lock.json
+          git commit -m "chore(release): bump version to $next [skip ci]"
+          # main may have moved while the build ran; the bump only touches
+          # version fields, so a rebase is safe here.
+          git pull --rebase origin main
+          git push origin HEAD:main

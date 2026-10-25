@@ -1,0 +1,96 @@
+{
+  "//": "Example answers: a local realm for the fictional Acme Org. Try: node generate-realm.mjs --preset example --out /tmp/realm.json. Passwords and secrets are left out, so they are generated.",
+  "realm": {
+    "name": "acme-org",
+    "displayName": "Acme Org",
+    "kind": "local",
+    "publicUrl": "http://localhost:8180",
+    "sslRequired": "none",
+    "theme": "",
+    "resetPasswordAllowed": false,
+    "rememberMe": true,
+    "accessTokenLifespan": 300
+  },
+  "clients": {
+    "api": "acme-org-api",
+    "web": "acme-org-web",
+    "admin": "acme-org-admin",
+    "cliId": "acme-org-cli",
+    "claimPrefix": "acme_org",
+    "webUrls": [
+      "http://localhost:5174"
+    ],
+    "cli": true
+  },
+  "users": [
+    {
+      "username": "admin",
+      "email": "admin@acme.example",
+      "firstName": "Acme",
+      "lastName": "Admin",
+      "platformAdmin": true,
+      "temporary": false
+    },
+    {
+      "username": "jane",
+      "email": "jane@acme.example",
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "platformAdmin": false,
+      "temporary": false
+    },
+    {
+      "username": "joe",
+      "email": "joe@acme.example",
+      "firstName": "Joe",
+      "lastName": "Bloggs",
+      "platformAdmin": false,
+      "temporary": false
+    }
+  ],
+  "organizations": [
+    {
+      "id": "a1c0ffee-0000-4000-8000-0000000ac001",
+      "name": "Acme Logistics",
+      "alias": "acme-logistics",
+      "tenantId": "7e1a0000-0000-4000-8000-0000000ac001",
+      "domains": [
+        "acme.example"
+      ],
+      "groupIds": {
+        "admins": "6a0e0000-0000-4000-8000-0000000ac010",
+        "members": "6a0e0000-0000-4000-8000-0000000ac011",
+        "viewers": "6a0e0000-0000-4000-8000-0000000ac012"
+      },
+      "members": [
+        {
+          "username": "jane",
+          "group": "admins"
+        },
+        {
+          "username": "joe",
+          "group": "viewers"
+        }
+      ]
+    }
+  ],
+  "m2m": [
+    {
+      "clientId": "acme-org-m2m-logistics-erp",
+      "name": "Acme Logistics: ERP integration",
+      "description": "Machine-to-machine client of tenant acme-logistics (client_credentials)",
+      "organization": "acme-logistics",
+      "scopeRoles": [
+        "tracking:lookup",
+        "shipments:read",
+        "shipments:track"
+      ],
+      "serviceRoles": [
+        "tracking:lookup",
+        "shipments:read",
+        "shipments:track"
+      ]
+    }
+  ],
+  "smtp": null
+}

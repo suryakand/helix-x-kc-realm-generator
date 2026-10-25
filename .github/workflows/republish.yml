@@ -1,0 +1,55 @@
+name: Republish a released version
+
+# Copies a version that is already on one registry to a registry that lacks it,
+# e.g. 0.1.4 from npmjs.org to the custom registry. The released tarball is
+# downloaded and published unchanged, so both registries hold identical bytes;
+# nothing is built, and no tag, release, or version bump is made. To retry a
+# failed release of the current version, re-run "Publish package" instead.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to copy, e.g. 0.1.4'
+        type: string
+        required: true
+      target:
+        description: 'Registry to copy it to (one already holding it is skipped)'
+        type: choice
+        default: custom
+        options: [custom, npm, both]
+      custom_registry:
+        description: 'Custom registry URL for this run (defaults to the CUSTOM_REGISTRY_URL repository variable)'
+        type: string
+        required: false
+
+# Shares the publish workflow's group, so a copy never races a release.
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+  TARGET: ${{ inputs.target }}
+  CUSTOM_REGISTRY_URL: ${{ inputs.custom_registry || vars.CUSTOM_REGISTRY_URL }}
+  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  CUSTOM_REGISTRY_AUTH: ${{ secrets.CUSTOM_REGISTRY_AUTH }}
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check registries
+        run: node .github/scripts/publish.mjs --check --version "$VERSION" "$TARGET"
+
+      - name: Copy the release
+        run: node .github/scripts/publish.mjs --version "$VERSION" "$TARGET"

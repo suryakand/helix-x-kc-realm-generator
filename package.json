@@ -1,0 +1,59 @@
+{
+  "name": "@helix-x/kc-realm-generator",
+  "version": "0.1.0",
+  "description": "Interactive generator for multi-tenant Keycloak realm import files (organizations, permission bundles, M2M clients)",
+  "license": "ISC",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "kc-realm-generator": "./generate-realm.mjs"
+  },
+  "exports": {
+    ".": "./build-realm.mjs",
+    "./package.json": "./package.json",
+    "./templates/*": "./templates/*"
+  },
+  "files": [
+    "build-realm.mjs",
+    "generate-realm.mjs",
+    "templates",
+    "presets",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "generate": "node generate-realm.mjs",
+    "test": "node --test",
+    "publish:npm": "node .github/scripts/publish.mjs npm",
+    "publish:custom": "node .github/scripts/publish.mjs custom",
+    "publish:both": "node .github/scripts/publish.mjs both",
+    "publish:dry": "DRY_RUN=1 node .github/scripts/publish.mjs both",
+    "publish:check": "node .github/scripts/publish.mjs --check both",
+    "publish:copy": "node .github/scripts/publish.mjs --version",
+    "registry:login": "npm config set --location=user //packages.allquill.com/repository/allquill-npm/:_auth \"${NPM_TOKEN:?set NPM_TOKEN to the base64 of user:password}\""
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.4"
+  },
+  "keywords": [
+    "keycloak",
+    "realm",
+    "multi-tenant",
+    "organizations",
+    "oidc",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/suryakand/kc-realm-generator.git"
+  },
+  "homepage": "https://github.com/suryakand/kc-realm-generator#readme",
+  "bugs": {
+    "url": "https://github.com/suryakand/kc-realm-generator/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
