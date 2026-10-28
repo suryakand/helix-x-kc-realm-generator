@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -58,4 +58,20 @@ test('the CLI writes a realm from a preset and a template', () => {
   const realm = JSON.parse(readFileSync(out, 'utf8'));
   assert.equal(realm.realm, 'acme-org');
   assert.deepEqual(realm.clientScopes, base.clientScopes);
+});
+
+test('the CLI creates a missing --out-dir (--preset answers yes)', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'kc-realm-')), 'new', 'dir');
+  const output = execFileSync(process.execPath, [resolve(ROOT, 'generate-realm.mjs'), '--preset', 'example', '--out-dir', dir], { encoding: 'utf8' });
+  assert.match(output, /does not exist; it will be created/);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'realm-acme-org.local.json'), 'utf8')).realm, 'acme-org');
+});
+
+test('the CLI refuses an --out-dir that is a file, before any question', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'kc-realm-')), 'not-a-dir');
+  writeFileSync(file, '');
+  assert.throws(
+    () => execFileSync(process.execPath, [resolve(ROOT, 'generate-realm.mjs'), '--preset', 'example', '--out-dir', file], { stdio: 'pipe' }),
+    (err) => /is not a directory/.test(err.stderr.toString()),
+  );
 });

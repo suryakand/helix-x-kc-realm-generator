@@ -51,7 +51,9 @@ With the claim prefix `acme_org`:
 | `realm-<realm>.local.json` | The realm import, **with passwords and secrets**. Keep it out of version control (e.g. ignore `*.local.json`) |
 | `realm-<realm>.answers.local.json` | Your answers **without** passwords or secrets, to rerun or tweak later |
 
-Both go to the current directory, or `--out-dir <dir>`; `--out <file>` names the realm file. Then it prints, once:
+Both go to the current directory, or `--out-dir <dir>`; `--out <file>` names the realm file. An `--out-dir` that does
+not exist is reported before any question, and the tool asks whether to create it (with `--yes` or `--preset`, it
+does). Then it prints, once:
 
 - the generated passwords and secrets;
 - how to load the file into Keycloak, and its hostname for a hosted setup;
@@ -76,23 +78,89 @@ keycloak:
 - Mount one file, not a directory holding the answers file too: Keycloak tries to import every `.json` there and
   fails on the answers file.
 - A theme you name must be installed in Keycloak (a provider JAR in `/opt/keycloak/providers`); otherwise Keycloak
-  falls back to its default. Pass `--providers <dir>` to have the tool list the JARs it finds there.
+  falls back to its default. To check while you answer, pass `--providers <dir>` with the local directory that holds
+  those JARs (such as the one you mount at `/opt/keycloak/providers`). The theme question then lists the `.jar` files
+  in it, or, if you name a theme and it holds none (or does not exist), warns that Keycloak will use its default.
+  It is a check only: it looks at file names, not inside the JARs, writes nothing to the realm or answers file, and
+  prints nothing with `--yes` or `--preset`.
 
 ## Options
 
 ```bash
-node generate-realm.mjs --answers realm-acme-org.answers.local.json   # defaults from an earlier run
+node generate-realm.mjs --answers realm-acme-org.answers.local.json   # questions, defaults from an earlier run
 node generate-realm.mjs --answers <file> --yes      # no questions; missing passwords/secrets are generated
                                                     #   (an SMTP password cannot be: it fails, run without --yes)
 node generate-realm.mjs --preset example --out /tmp/realm.json        # a preset: no questions, quiet
 node generate-realm.mjs --preset path/to/answers.json --out <file>
-node generate-realm.mjs --out-dir <dir> | --out <file> | --providers <dir>
+node generate-realm.mjs --out-dir <dir> | --out <file>
+node generate-realm.mjs --providers <dir>           # list the theme JARs in <dir> at the theme question (a check only)
 node generate-realm.mjs --template <file>           # your template (default: templates/example.realm-base.json)
 ```
 
-A **preset** is an answers file run without questions: a name from `presets/` or a path. It writes no answers file
-and prints only the passwords and secrets it had to generate. Use one to keep a fixed realm (such as a project's local
-development realm) in step with the template: keep the preset in your project and regenerate the realm file from it.
+### `--answers` or `--preset`
+
+Both read an **answers file** (the same format; see the sample below). Use `--answers` when you make or change the
+realm of an environment, such as a server; use `--preset` when a script regenerates a fixed realm, such as a
+project's committed development realm after a template change.
+
+| | `--answers <file>` | `--preset <name or file>` |
+|---|---|---|
+| Takes | a path | a name from `presets/` (such as `example`) or a path |
+| Questions | all asked, with the file's values as defaults; `--yes` skips them | none (`--yes` is implied) |
+| Answers missing from the file | asked; with `--yes`, the default the question offers | the default the question offers |
+| Passwords and secrets missing from the file | asked (generate or type); with `--yes`, generated, except an SMTP password: the run fails | generated, except an SMTP password: the run fails |
+| Writes | the realm file **and** a complete answers file next to it | the realm file only |
+| Prints | summary, generated credentials, next steps (issuer, client ids, …) | summary and generated credentials only |
+| Realm file already there | asks before overwriting (with `--yes`, overwrites) | overwrites |
+
+With both, `--preset` wins and `--answers` is ignored.
+
+### A sample answers file
+
+An answers file needs only what differs from the defaults. For example, `my-realm.answers.json`:
+
+```json
+{
+  "realm": {
+    "name": "acme-org",
+    "displayName": "Acme Org",
+    "kind": "hosted",
+    "publicUrl": "https://auth.acme.example"
+  },
+  "clients": {
+    "webUrls": ["https://app.acme.example"]
+  },
+  "users": [
+    { "username": "admin", "email": "admin@acme.example", "firstName": "Acme", "lastName": "Admin", "platformAdmin": true }
+  ],
+  "organizations": [
+    {
+      "name": "Acme Logistics",
+      "alias": "acme-logistics",
+      "domains": ["acme.example"],
+      "members": [{ "username": "admin", "group": "admins" }]
+    }
+  ],
+  "smtp": null
+}
+```
+
+```bash
+node generate-realm.mjs --answers my-realm.answers.json          # every question, with these values as defaults
+node generate-realm.mjs --answers my-realm.answers.json --yes    # no questions
+```
+
+Anything left out takes its default: client ids derived from the realm name (`acme-org-api`, `acme-org-web`, …),
+"Forgot password" on, a 300-second token lifespan, new organization, tenant and group ids. `"smtp": null` means no
+SMTP; leave `smtp` out to be asked. Either run writes `realm-acme-org.local.json` and
+`realm-acme-org.answers.local.json`: every answer, including the generated ids, but no passwords or secrets. Use that
+file for later runs, not your own, so the ids (and so your tenants) stay the same:
+
+```bash
+node generate-realm.mjs --answers realm-acme-org.answers.local.json   # updates that file too
+```
+
+Passwords and secrets are never saved, so each run asks for them again, or with `--yes` generates new ones.
 
 `presets/example.answers.json` is a complete example for the fictional **Acme Org**: a local realm `acme-org`, users
 `admin` / `jane` / `joe` at `acme.example`, tenant `acme-logistics` (jane admin, joe viewer) and an ERP M2M client. It
@@ -150,3 +218,36 @@ npm test           # node --test: builder and CLI, no Keycloak needed
 ```
 
 Releases are made by GitHub Actions on a push to `main`; see [RELEASING.md](RELEASING.md).
+
+### Use a local copy without publishing
+
+There is no build step: the package is published as written, so a checkout is already usable. Run `npm install` in
+it first. Below, `../helix-x-kc-realm-generator` is the checkout as seen from your project.
+
+**Run it directly**, without installing it in your project:
+
+```bash
+node ../helix-x-kc-realm-generator/generate-realm.mjs --template keycloak/realm-base.json
+```
+
+**Install a packed copy**: the closest to a published release, since it holds only the files a release holds
+(`files` in `package.json`). Repack and reinstall after each change.
+
+```bash
+npm pack --pack-destination /tmp                                    # in the checkout: /tmp/helix-x-kc-realm-generator-<version>.tgz
+npm install --save-dev /tmp/helix-x-kc-realm-generator-<version>.tgz # in your project
+npx kc-realm-generator --help
+```
+
+**Install the checkout itself**: npm links your project to the folder, so changes take effect without reinstalling.
+
+```bash
+npm install --save-dev ../helix-x-kc-realm-generator                 # in your project
+```
+
+Either install also makes the library import (`@helix-x/kc-realm-generator`) use the local copy. Both write a
+`file:` path into your `package.json` and `package-lock.json`: don't commit it. To go back to the published package:
+
+```bash
+npm install --save-dev @helix-x/kc-realm-generator@latest
+```

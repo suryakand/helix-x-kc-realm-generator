@@ -11,11 +11,12 @@
  *
  *   --template <file>  the fixed part: permissions, bundles, client scopes (default: templates/example.realm-base.json)
  *   --out <file>       realm file to write (default: <out-dir>/realm-<realm>.local.json)
- *   --out-dir <dir>    where the realm and answers files go (default: the current directory)
- *   --providers <dir>  Keycloak providers directory, to list the theme JARs it holds
+ *   --out-dir <dir>    where the realm and answers files go (default: the current directory); offers to create a missing one
+ *   --providers <dir>  a local copy of Keycloak's providers directory: the theme question lists the JARs in it, or
+ *                      warns if it has none. A check only: nothing goes into the realm, and --yes/--preset ignore it
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -400,6 +401,16 @@ function loadDefaults() {
   return DEFAULTS;
 }
 
+/** Checks --out-dir before any question; one that does not exist is created when the files are written, if wanted. */
+async function checkOutDir(dir) {
+  if (existsSync(dir)) {
+    if (!statSync(dir).isDirectory()) throw new Error(`--out-dir ${show(dir)} is not a directory`);
+    return true;
+  }
+  console.log(`! --out-dir ${show(dir)} does not exist${args.yes ? '; it will be created' : ''}.`);
+  return ask.confirm({ message: `Create ${show(dir)}?`, default: true });
+}
+
 function summary(a) {
   section('Summary', true);
   console.log(`   Realm        ${a.realm.name} ("${a.realm.displayName}"), ${a.realm.kind}, issuer ${a.realm.publicUrl}/realms/${a.realm.name}`);
@@ -442,6 +453,11 @@ function printNext(a, outFile, generated) {
 
 async function main() {
   const d = loadDefaults();
+  const outDir = resolve(process.cwd(), args['out-dir'] ?? '.');
+  if (args['out-dir'] && !args.out && !(await checkOutDir(outDir))) {
+    console.log('Nothing written.');
+    return;
+  }
   const realm = await askRealm({ ...DEFAULTS.realm, ...d.realm });
   const clients = await askClients({ ...DEFAULTS.clients, ...d.clients }, realm);
   const users = await askUsers(d.users ?? [], realm);
@@ -457,7 +473,6 @@ async function main() {
   const realmJson = buildRealm(answers, base);
   summary(answers);
 
-  const outDir = resolve(process.cwd(), args['out-dir'] ?? '.');
   const outFile = args.out ? resolve(process.cwd(), args.out) : resolve(outDir, `realm-${realm.name}.local.json`);
   if (existsSync(outFile) && !args.yes && !(await confirm({ message: `${show(outFile)} exists. Overwrite?`, default: false }))) {
     console.log('Nothing written.');
@@ -467,6 +482,7 @@ async function main() {
     console.log('Nothing written.');
     return;
   }
+  if (!args.out) mkdirSync(outDir, { recursive: true });
   writeFileSync(outFile, `${JSON.stringify(realmJson, null, 2)}\n`);
   console.log(`\n✔ Wrote ${show(outFile)}`);
 

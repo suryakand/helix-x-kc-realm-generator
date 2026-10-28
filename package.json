@@ -26,6 +26,7 @@
   "scripts": {
     "generate": "node generate-realm.mjs",
     "test": "node --test",
+    "pack:local": "npm pack --pack-destination ./dist",
     "publish:npm": "node .github/scripts/publish.mjs npm",
     "publish:custom": "node .github/scripts/publish.mjs custom",
     "publish:both": "node .github/scripts/publish.mjs both",
