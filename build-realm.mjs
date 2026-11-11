@@ -11,7 +11,10 @@
  *   organizations: [{ id, name, alias, tenantId, domains: [..], groupIds: { admins, members, viewers },
  *                     members: [{ username, group }] }],
  *   m2m:     [{ clientId, name, description, organization (alias), scopeRoles: [..], serviceRoles: [..], secret }],
- *   smtp:    null | { host, port, starttls, ssl, from, fromDisplayName, replyTo, auth, user, password }
+ *   smtp:    null | { host, port, starttls, ssl, from, fromDisplayName, replyTo, auth, user, password },
+ *   scopes?: { preset, mode: 'merge' | 'replace', list: [{ name, description, bundles: [tenant-admin|tenant-member|tenant-viewer] }] }
+ *            // optional: the application permissions replacing the template's (tenant:* / platform:* always stay);
+ *            // absent = the template's as they are. preset and mode only record how the list was made.
  * }
  */
 
@@ -75,12 +78,98 @@ function roles(base, api) {
   };
 }
 
-/** All tracking and admin permission names the template defines (non-composite client roles). */
+/** All application and admin permission names the template defines (non-composite client roles). */
 export function permissionNames(base) {
   return base.roles.client[BASE_API_CLIENT].filter((r) => !r.composite).map((r) => r.name);
 }
 
+// ---------- application scopes ----------
+// A scope is an application permission: { name, description, bundles: [tenant-admin | tenant-member | tenant-viewer] }.
+// The tenant:* and platform:* administration permissions are core: always kept from the template, never replaced.
+
+export const CORE_PREFIXES = ['tenant:', 'platform:'];
+export const isCore = (name) => CORE_PREFIXES.some((p) => name.startsWith(p));
+const BUNDLES = Object.values(TENANT_GROUPS);
+export const SCOPE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+/** The bundles a scope gets when it names none: admin and member always, viewer for read-only ones. */
+export function defaultBundles(name) {
+  return /:(read|lookup|list)$/.test(name) ? [...BUNDLES] : BUNDLES.filter((b) => b !== 'tenant-viewer');
+}
+
+/** A scope with every field filled in: bundles from the rule when absent, in TENANT_GROUPS order. */
+export function normalizeScope(s) {
+  const bundles = s.bundles ?? defaultBundles(s.name);
+  return { name: s.name, description: s.description ?? '', bundles: BUNDLES.filter((b) => bundles.includes(b)) };
+}
+
+/** The template's application scopes (non-core permissions), with the bundles that include them. */
+export function templateScopes(base) {
+  const roles = base.roles.client[BASE_API_CLIENT];
+  const bundles = roles.filter((r) => r.composite);
+  return roles
+    .filter((r) => !r.composite && !isCore(r.name))
+    .map((r) => ({
+      name: r.name,
+      description: r.description ?? '',
+      bundles: BUNDLES.filter((b) => bundles.find((x) => x.name === b)?.composites?.client?.[BASE_API_CLIENT]?.includes(r.name)),
+    }));
+}
+
+/** preset + custom → one list. merge: custom appended, a custom scope wins on a name clash. replace: custom only. */
+export function mergeScopes(preset, custom, mode = 'merge') {
+  if (mode === 'replace') return custom;
+  if (mode !== 'merge') throw new Error(`scopes mode must be merge or replace, not "${mode}"`);
+  const byName = new Map(custom.map((s) => [s.name, s]));
+  return [...preset.map((s) => byName.get(s.name) ?? s), ...custom.filter((s) => !preset.some((p) => p.name === s.name))];
+}
+
+/** Throws on a scope list the realm cannot hold. */
+export function validateScopes(scopes) {
+  const seen = new Set();
+  for (const s of scopes) {
+    if (!s?.name || !SCOPE_NAME.test(s.name)) throw new Error(`scope "${s?.name ?? ''}": letters, digits, . _ : - only`);
+    if (isCore(s.name)) throw new Error(`scope "${s.name}": ${CORE_PREFIXES.join(' and ')} permissions come from the template and cannot be added`);
+    if (BUNDLES.includes(s.name)) throw new Error(`scope "${s.name}": that is a bundle name`);
+    if (seen.has(s.name)) throw new Error(`scope "${s.name}" appears twice`);
+    seen.add(s.name);
+    const unknown = (s.bundles ?? []).filter((b) => !BUNDLES.includes(b));
+    if (unknown.length) throw new Error(`scope "${s.name}": unknown bundle ${unknown.join(', ')} (use ${BUNDLES.join(', ')})`);
+  }
+}
+
+/** The template with its application permissions replaced by `scopes`; core permissions and bundle descriptions stay. */
+export function applyScopes(base, scopes) {
+  validateScopes(scopes);
+  const list = scopes.map(normalizeScope);
+  const roles = base.roles.client[BASE_API_CLIENT];
+  const core = roles.filter((r) => !r.composite && isCore(r.name));
+  const bundles = roles
+    .filter((r) => r.composite)
+    .map((r) => {
+      const coreMembers = (r.composites?.client?.[BASE_API_CLIENT] ?? []).filter(isCore);
+      const appMembers = list.filter((s) => s.bundles.includes(r.name)).map((s) => s.name);
+      return { ...r, composites: { ...r.composites, client: { ...r.composites?.client, [BASE_API_CLIENT]: [...appMembers, ...coreMembers] } } };
+    });
+  return {
+    ...base,
+    roles: {
+      ...base.roles,
+      client: {
+        ...base.roles.client,
+        [BASE_API_CLIENT]: [...list.map((s) => ({ name: s.name, description: s.description, composite: false })), ...core, ...bundles],
+      },
+    },
+  };
+}
+
 export function buildRealm(a, base) {
+  if (a.scopes) base = applyScopes(base, a.scopes.list ?? []);
+  const permissions = new Set(permissionNames(base));
+  for (const m of a.m2m) {
+    const unknown = [...m.serviceRoles, ...(m.scopeRoles ?? [])].filter((r) => !permissions.has(r));
+    if (unknown.length) throw new Error(`M2M client ${m.clientId}: unknown permission ${[...new Set(unknown)].join(', ')}`);
+  }
   const { api, web, admin } = a.clients;
   const realmName = a.realm.name;
   const cliId = a.clients.cliId ?? `${realmName}-cli`;

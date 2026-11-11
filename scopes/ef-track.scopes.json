@@ -1,0 +1,14 @@
+{
+  "//": "Application scopes of ef-track (container and vessel tracking). Use with --scopes-preset ef-track, or as a starting point for your own --scopes file. tenant:* and platform:* permissions are not listed: they always come from the template.",
+  "scopes": [
+    { "name": "tracking:lookup", "description": "One-shot lookup of a container or booking number", "bundles": ["tenant-admin", "tenant-member", "tenant-viewer"] },
+    { "name": "shipments:read", "description": "List and read tracked shipments and their events", "bundles": ["tenant-admin", "tenant-member", "tenant-viewer"] },
+    { "name": "shipments:track", "description": "Start tracking a shipment", "bundles": ["tenant-admin", "tenant-member"] },
+    { "name": "shipments:refresh", "description": "Refresh a tracked shipment from the carrier now", "bundles": ["tenant-admin", "tenant-member"] },
+    { "name": "shipments:stop", "description": "Stop tracking a shipment", "bundles": ["tenant-admin", "tenant-member"] },
+    { "name": "vessels:read", "description": "Vessel registry, tracked vessels, MMSI lookup providers", "bundles": ["tenant-admin", "tenant-member", "tenant-viewer"] },
+    { "name": "vessels:mmsi:manage", "description": "Look up and set vessel MMSIs", "bundles": ["tenant-admin"] },
+    { "name": "carriers:read", "description": "List carriers and their status", "bundles": ["tenant-admin", "tenant-member", "tenant-viewer"] },
+    { "name": "carriers:raw", "description": "Raw carrier responses (debugging)", "bundles": ["tenant-admin"] }
+  ]
+}

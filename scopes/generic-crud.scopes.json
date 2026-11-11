@@ -1,0 +1,10 @@
+{
+  "//": "A neutral starting point: create/read/update/delete on resources, plus reports. Use with --scopes-preset generic-crud, or copy it as your own --scopes file. bundles is optional: without it, tenant-admin and tenant-member get the scope, and tenant-viewer gets it too when it ends in :read, :lookup or :list.",
+  "scopes": [
+    { "name": "resources:read", "description": "List and read resources" },
+    { "name": "resources:create", "description": "Create resources" },
+    { "name": "resources:update", "description": "Change resources" },
+    { "name": "resources:delete", "description": "Delete resources", "bundles": ["tenant-admin"] },
+    { "name": "reports:read", "description": "See reports" }
+  ]
+}

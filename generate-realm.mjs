@@ -10,6 +10,12 @@
  *   node generate-realm.mjs --preset example --out <file>    # a preset: a name in presets/ or a path; no questions
  *
  *   --template <file>  the fixed part: permissions, bundles, client scopes (default: templates/example.realm-base.json)
+ *   --scopes-preset <name|file>  application scopes to start from: template (the template's own, default), a name in
+ *                      scopes/ (ef-track, generic-crud), a scope file, or none (only the tenant:/platform: permissions)
+ *   --scopes <file>    custom application scopes (JSON: { "scopes": [{ name, description, bundles? }] } or an array),
+ *                      shown for confirmation, then combined with the predefined set
+ *   --scopes-mode merge|replace  merge (default): the custom scopes are added, replacing same-named ones;
+ *                      replace: only the custom scopes. tenant:* and platform:* permissions stay either way
  *   --out <file>       realm file to write (default: <out-dir>/realm-<realm>.local.json)
  *   --out-dir <dir>    where the realm and answers files go (default: the current directory); offers to create a missing one
  *   --providers <dir>  a local copy of Keycloak's providers directory: the theme question lists the JARs in it, or
@@ -21,10 +27,15 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkbox, confirm, input, number, password, select } from '@inquirer/prompts';
-import { buildRealm, permissionNames, redactAnswers, TENANT_GROUPS } from './build-realm.mjs';
+import {
+  applyScopes, buildRealm, CORE_PREFIXES, isCore, mergeScopes, normalizeScope, permissionNames, redactAnswers,
+  templateScopes, TENANT_GROUPS, validateScopes,
+} from './build-realm.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GROUPS = Object.keys(TENANT_GROUPS);
+const BUNDLES = Object.values(TENANT_GROUPS);
+const SCOPES_DIR = resolve(HERE, 'scopes');
 
 const { values: args } = parseArgs({
   options: {
@@ -34,6 +45,9 @@ const { values: args } = parseArgs({
     out: { type: 'string' },
     'out-dir': { type: 'string' },
     providers: { type: 'string' },
+    scopes: { type: 'string' },
+    'scopes-preset': { type: 'string' },
+    'scopes-mode': { type: 'string' },
     yes: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
@@ -46,9 +60,10 @@ if (args.help) {
 
 const templateFile = args.template ? resolve(process.cwd(), args.template) : resolve(HERE, 'templates', 'example.realm-base.json');
 const base = JSON.parse(readFileSync(templateFile, 'utf8'));
-const PERMISSIONS = permissionNames(base);
-/** What an M2M client may be granted: every permission except tenant and platform administration. */
-const SERVICE_PERMISSIONS = PERMISSIONS.filter((p) => !p.startsWith('tenant:') && !p.startsWith('platform:'));
+if (args['scopes-mode'] && !['merge', 'replace'].includes(args['scopes-mode'])) {
+  console.error(`✖ --scopes-mode must be merge or replace, not "${args['scopes-mode']}"`);
+  process.exit(1);
+}
 
 // ---------- helpers ----------
 
@@ -70,6 +85,13 @@ const url = (v) => {
 };
 const email = (v) => (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) ? true : 'not a valid email address');
 const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+/** A path to a file, or the name of one shipped in `dir` as <name><suffix>. */
+function resolveNamed(dir, suffix, value, what) {
+  const asPath = resolve(process.cwd(), value);
+  const file = existsSync(asPath) && !/^[\w-]+$/.test(value) ? asPath : resolve(dir, `${value}${suffix}`);
+  if (!existsSync(file)) throw new Error(`Unknown ${what} "${value}": not a file, nor one of ${relative(HERE, dir)}/ (${readdirSync(dir).join(', ')})`);
+  return file;
+}
 // Section headers and hints are for people answering questions; --yes runs stay quiet until the summary.
 const section = (title, always = false) =>
   (always || !args.yes) && console.log(`\n── ${title} ${'─'.repeat(Math.max(0, 60 - title.length))}`);
@@ -227,6 +249,124 @@ async function askClients(d, realm) {
   };
 }
 
+/** Scopes from a scope file: { scopes: [..] } or a bare array, validated, bundles filled in. */
+function readScopes(file) {
+  const json = JSON.parse(readFileSync(file, 'utf8'));
+  const scopes = Array.isArray(json) ? json : json.scopes;
+  if (!Array.isArray(scopes)) throw new Error(`${show(file)}: expected { "scopes": [..] } or an array of scopes`);
+  try {
+    validateScopes(scopes);
+  } catch (err) {
+    throw new Error(`${show(file)}: ${err.message}`);
+  }
+  return scopes.map(normalizeScope);
+}
+
+/** A predefined scope set: the template's own, none, a name in scopes/, or a scope file. */
+function presetScopes(preset) {
+  if (preset === 'template') return templateScopes(base);
+  if (preset === 'none') return [];
+  return readScopes(resolveNamed(SCOPES_DIR, '.scopes.json', preset, 'scope set'));
+}
+
+/** "a:read, b:write=Write b" → scopes (bundles from the rule). */
+const typedScopes = (text) =>
+  list(text).map((x) => {
+    const [n, ...desc] = x.split('=');
+    return normalizeScope({ name: n.trim(), description: desc.join('=').trim() });
+  });
+
+const scopeLine = (s) => `${s.name}${s.description ? ` — ${s.description}` : ''}  [${s.bundles.join(', ') || 'no bundle'}]`;
+
+async function askScopes(d) {
+  section('Application scopes');
+  hint(`The API's permissions (client roles). ${CORE_PREFIXES.map((p) => `${p}*`).join(' and ')} administration permissions always come from the template.`);
+  // 1. Where to start: the answers file's list, or a predefined set (an explicit --scopes-preset skips the answers file's list).
+  let preset;
+  let start;
+  const keep = d?.list && !args['scopes-preset']
+    && (await ask.confirm({ message: `Keep the ${d.list.length} scopes from the answers file (${d.list.map((s) => s.name).join(', ') || 'none'})?`, default: true }));
+  if (keep) {
+    validateScopes(d.list);
+    preset = d.preset ?? 'template';
+    start = d.list.map(normalizeScope);
+  } else {
+    const sets = readdirSync(SCOPES_DIR).filter((f) => f.endsWith('.scopes.json')).map((f) => f.replace(/\.scopes\.json$/, ''));
+    const wanted = args['scopes-preset'] ?? d?.preset ?? 'template';
+    preset = await ask.select({
+      message: 'Predefined scope set',
+      default: wanted,
+      choices: [
+        { name: `template (the scopes in ${show(templateFile)})`, value: 'template' },
+        ...sets.map((n) => ({ name: `${n} (scopes/${n}.scopes.json)`, value: n })),
+        ...(['template', 'none', ...sets].includes(wanted) ? [] : [{ name: wanted, value: wanted }]),
+        { name: `none (only the ${CORE_PREFIXES.join(' / ')} permissions)`, value: 'none' },
+      ],
+    });
+    start = presetScopes(preset);
+  }
+  // 2. Custom scopes from --scopes, confirmed, then merged into or replacing the start.
+  let mode = args['scopes-mode'] ?? d?.mode ?? 'merge';
+  let scopes = start;
+  if (args.scopes) {
+    const file = resolve(process.cwd(), args.scopes);
+    const custom = readScopes(file);
+    hint(`${show(file)}:`);
+    for (const s of custom) hint(`  ${scopeLine(s)}`);
+    if (await ask.confirm({ message: `Use these ${custom.length} scopes from ${show(file)}?`, default: true })) {
+      if (start.length) {
+        mode = await ask.select({
+          message: `Combine them with the ${start.length} scopes of "${preset}"`,
+          default: mode,
+          choices: [
+            { name: 'merge (add them; same-named ones are replaced)', value: 'merge' },
+            { name: 'replace (only the scopes from the file)', value: 'replace' },
+          ],
+        });
+      }
+      scopes = mergeScopes(start, custom, mode);
+    }
+  }
+  // 3. Remove and add.
+  if (scopes.length) {
+    const chosen = await ask.checkbox({
+      message: 'Scopes (uncheck to remove)',
+      choices: scopes.map((s) => ({ name: scopeLine(s), value: s.name, checked: true })),
+    });
+    scopes = scopes.filter((s) => chosen.includes(s.name));
+  }
+  for (;;) {
+    const text = await ask.input({
+      message: 'Add scopes, comma-separated "name" or "name=description" (empty: done)',
+      default: '',
+      validate: (v) => {
+        try {
+          validateScopes(typedScopes(v));
+          return true;
+        } catch (err) {
+          return err.message;
+        }
+      },
+    });
+    if (!text) break;
+    scopes = mergeScopes(scopes, typedScopes(text), 'merge');
+  }
+  // 4. Bundles.
+  const inBundle = (b) => scopes.filter((s) => s.bundles.includes(b)).map((s) => s.name).join(', ') || '-';
+  for (const b of BUNDLES) hint(`${b.padEnd(14)} ${inBundle(b)}`);
+  if (scopes.length && (await ask.confirm({ message: 'Adjust which bundles get which scopes?', default: false }))) {
+    for (const b of BUNDLES) {
+      const chosen = await ask.checkbox({
+        message: `Scopes in ${b}`,
+        choices: scopes.map((s) => ({ name: s.name, value: s.name, checked: s.bundles.includes(b) })),
+      });
+      scopes = scopes.map((s) => normalizeScope({ ...s, bundles: [...s.bundles.filter((x) => x !== b), ...(chosen.includes(s.name) ? [b] : [])] }));
+    }
+  }
+  if (!scopes.length) hint('No application scopes: only the administration permissions, and nothing to grant M2M clients.');
+  return { preset, mode, list: scopes };
+}
+
 async function askUser(d, others, realm, { platformAdmin } = {}) {
   const taken = new Set(others.map((u) => u.username));
   const username = await ask.input({
@@ -296,7 +436,7 @@ async function askOrganizations(d, users) {
   return askList('organization', d.map((o) => ({ ...o, __label: o.alias })), (o, done) => askOrganization(o, done, users));
 }
 
-async function askM2m(d, done, orgs, realm) {
+async function askM2m(d, done, orgs, realm, permissions) {
   const organization = await ask.select({
     message: 'Tenant of this client',
     default: d?.organization,
@@ -312,7 +452,7 @@ async function askM2m(d, done, orgs, realm) {
   const displayName = await ask.input({ message: 'Display name', default: d?.name ?? `${org.name}: integration` });
   const serviceRoles = await ask.checkbox({
     message: 'Permissions (the client gets exactly these)',
-    choices: SERVICE_PERMISSIONS.map((p) => ({ name: p, value: p, checked: (d?.serviceRoles ?? SERVICE_PERMISSIONS).includes(p) })),
+    choices: permissions.map((p) => ({ name: p, value: p, checked: (d?.serviceRoles ?? permissions).includes(p) })),
   });
   const clientSecret = await askSecret(`Client secret for ${clientId}`, d?.secret);
   return {
@@ -327,15 +467,25 @@ async function askM2m(d, done, orgs, realm) {
   };
 }
 
-async function askM2ms(d, orgs, realm) {
+/** `permissions`: what an M2M client may be granted, i.e. the application scopes (never tenant or platform administration). */
+async function askM2ms(d, orgs, realm, permissions) {
   section('Machine-to-machine clients');
   if (!orgs.length) {
     hint('Skipped: an M2M client belongs to an organization, and there are none.');
     return [];
   }
   hint('client_credentials clients for integrations, each bound to one tenant.');
-  const valid = d.filter((m) => orgs.some((o) => o.alias === m.organization));
-  return askList('M2M client', valid.map((m) => ({ ...m, __label: m.clientId })), (m, done) => askM2m(m, done, orgs, realm));
+  const known = new Set(permissions);
+  const valid = d
+    .filter((m) => orgs.some((o) => o.alias === m.organization))
+    .map((m) => {
+      const dropped = [...new Set([...(m.serviceRoles ?? []), ...(m.scopeRoles ?? [])])].filter((r) => !known.has(r));
+      // Shown with --yes too: the answers file asked for permissions this realm will not have.
+      if (dropped.length) console.log(`   ! ${m.clientId}: dropped ${dropped.join(', ')} (no longer an application scope).`);
+      const keep = (roles) => roles && roles.filter((r) => known.has(r));
+      return { ...m, serviceRoles: keep(m.serviceRoles), scopeRoles: keep(m.scopeRoles) };
+    });
+  return askList('M2M client', valid.map((m) => ({ ...m, __label: m.clientId })), (m, done) => askM2m(m, done, orgs, realm, permissions));
 }
 
 async function askSmtp(d, realm) {
@@ -390,9 +540,7 @@ async function askSmtp(d, realm) {
 function loadDefaults() {
   if (args.preset) {
     // A path to an answers file, or the name of one shipped in presets/.
-    const asPath = resolve(process.cwd(), args.preset);
-    const file = existsSync(asPath) && !args.preset.match(/^[\w-]+$/) ? asPath : resolve(HERE, 'presets', `${args.preset}.answers.json`);
-    if (!existsSync(file)) throw new Error(`Unknown preset "${args.preset}": not a file, nor one of presets/ (${readdirSync(resolve(HERE, 'presets')).join(', ')})`);
+    const file = resolveNamed(resolve(HERE, 'presets'), '.answers.json', args.preset, 'preset');
     args.yes = true;
     return JSON.parse(readFileSync(file, 'utf8'));
   }
@@ -415,11 +563,12 @@ function summary(a) {
   section('Summary', true);
   console.log(`   Realm        ${a.realm.name} ("${a.realm.displayName}"), ${a.realm.kind}, issuer ${a.realm.publicUrl}/realms/${a.realm.name}`);
   console.log(`   Web UI       ${a.clients.webUrls.join(', ')}${a.clients.cli ? `   + ${a.clients.cliId} (password grant)` : ''}`);
+  console.log(`   Scopes       ${a.scopes.list.length} from ${a.scopes.preset}${args.scopes ? ` + ${show(resolve(process.cwd(), args.scopes))} (${a.scopes.mode})` : ''}: ${a.scopes.list.map((s) => s.name).join(', ') || 'none'}`);
   console.log(`   Users        ${a.users.map((u) => u.username + (u.platformAdmin ? ' (platform admin)' : '')).join(', ')}`);
   for (const o of a.organizations) {
     console.log(`   Tenant       ${o.alias}: ${o.members.map((m) => `${m.username}→${m.group}`).join(', ') || 'no members'}`);
   }
-  for (const m of a.m2m) console.log(`   M2M client   ${m.clientId} (${m.organization}): ${m.serviceRoles.join(', ')}`);
+  for (const m of a.m2m) console.log(`   M2M client   ${m.clientId} (${m.organization}): ${m.serviceRoles.join(', ') || 'no permissions'}`);
   console.log(`   Theme        ${a.realm.theme || 'Keycloak default'};  Forgot password ${a.realm.resetPasswordAllowed ? 'on' : 'off'};  SMTP ${a.smtp ? `${a.smtp.host}:${a.smtp.port} from ${a.smtp.from}` : 'not set'}`);
 }
 
@@ -460,14 +609,16 @@ async function main() {
   }
   const realm = await askRealm({ ...DEFAULTS.realm, ...d.realm });
   const clients = await askClients({ ...DEFAULTS.clients, ...d.clients }, realm);
+  const scopes = await askScopes(d.scopes);
   const users = await askUsers(d.users ?? [], realm);
   const organizations = await askOrganizations(
     (d.organizations ?? []).map((o) => ({ ...o, members: o.members.filter((m) => users.some((u) => u.username === m.username)) })),
     users,
   );
-  const m2m = await askM2ms(d.m2m ?? [], organizations, realm);
+  const permissions = permissionNames(applyScopes(base, scopes.list)).filter((p) => !isCore(p));
+  const m2m = await askM2ms(d.m2m ?? [], organizations, realm, permissions);
   const smtp = await askSmtp(d.smtp, realm);
-  const answers = { realm, clients, users, organizations, m2m, smtp };
+  const answers = { realm, clients, scopes, users, organizations, m2m, smtp };
   if (users.some((u) => !u.username || !u.email)) throw new Error('every user needs a username and an email address');
 
   const realmJson = buildRealm(answers, base);

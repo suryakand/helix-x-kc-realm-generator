@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildRealm, permissionNames, redactAnswers, TENANT_GROUPS } from '../build-realm.mjs';
+import {
+  applyScopes, buildRealm, isCore, mergeScopes, permissionNames, redactAnswers, templateScopes, TENANT_GROUPS,
+} from '../build-realm.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = (p) => JSON.parse(readFileSync(resolve(ROOT, p), 'utf8'));
@@ -74,4 +76,85 @@ test('the CLI refuses an --out-dir that is a file, before any question', () => {
     () => execFileSync(process.execPath, [resolve(ROOT, 'generate-realm.mjs'), '--preset', 'example', '--out-dir', file], { stdio: 'pipe' }),
     (err) => /is not a directory/.test(err.stderr.toString()),
   );
+});
+
+const API = 'acme-org-api';
+const bundle = (b, name) => b.roles.client[API].find((r) => r.name === name).composites.client[API];
+const cli = (...argv) => execFileSync(process.execPath, [resolve(ROOT, 'generate-realm.mjs'), ...argv], { encoding: 'utf8' });
+const tmp = (name) => join(mkdtempSync(join(tmpdir(), 'kc-realm-')), name);
+
+test('applyScopes with the template\'s own scopes gives the template back', () => {
+  assert.deepEqual(applyScopes(base, templateScopes(base)), base);
+});
+
+test('the ef-track scope set is the bundled template\'s', () => {
+  assert.deepEqual(json('scopes/ef-track.scopes.json').scopes, templateScopes(base));
+});
+
+test('replacing the scopes keeps every tenant:/platform: permission and platform-admin', () => {
+  const crud = json('scopes/generic-crud.scopes.json').scopes;
+  const b = applyScopes(base, crud);
+  const core = permissionNames(base).filter(isCore);
+  assert.deepEqual(permissionNames(b), [...crud.map((s) => s.name), ...core]);
+  assert.deepEqual(b.roles.realm, base.roles.realm);
+  assert.deepEqual(bundle(b, 'tenant-viewer'), ['resources:read', 'reports:read']);
+  assert.ok(!bundle(b, 'tenant-member').includes('resources:delete'));
+  assert.ok(bundle(b, 'tenant-admin').includes('resources:delete'));
+  // core memberships are the template's
+  assert.deepEqual(bundle(b, 'tenant-member').filter(isCore), bundle(base, 'tenant-member').filter(isCore));
+});
+
+test('mergeScopes: merge appends and the custom scope wins a name clash; replace keeps only custom', () => {
+  const preset = [{ name: 'a:read', description: 'old' }, { name: 'b:write' }];
+  const custom = [{ name: 'a:read', description: 'new' }, { name: 'c:read' }];
+  assert.deepEqual(mergeScopes(preset, custom, 'merge').map((s) => [s.name, s.description]), [['a:read', 'new'], ['b:write', undefined], ['c:read', undefined]]);
+  assert.deepEqual(mergeScopes(preset, custom, 'replace'), custom);
+});
+
+test('applyScopes rejects core-prefixed, duplicate, malformed scopes and unknown bundles', () => {
+  assert.throws(() => applyScopes(base, [{ name: 'tenant:x' }]), /cannot be added/);
+  assert.throws(() => applyScopes(base, [{ name: 'a:read' }, { name: 'a:read' }]), /twice/);
+  assert.throws(() => applyScopes(base, [{ name: 'a b' }]), /letters, digits/);
+  assert.throws(() => applyScopes(base, [{ name: 'a:read', bundles: ['tenant-boss'] }]), /unknown bundle/);
+});
+
+test('buildRealm applies answers.scopes and rejects M2M roles that are not scopes', () => {
+  const a = answers();
+  a.scopes = { preset: 'none', mode: 'replace', list: [{ name: 'orders:read' }] };
+  a.m2m = a.m2m.map((m) => ({ ...m, serviceRoles: ['orders:read'], scopeRoles: ['orders:read'] }));
+  assert.ok(buildRealm(a, base).roles.client[API].some((r) => r.name === 'orders:read'));
+  a.m2m[0].serviceRoles = ['shipments:read'];
+  assert.throws(() => buildRealm(a, base), /unknown permission shipments:read/);
+});
+
+test('the CLI replaces the scopes with a --scopes file and saves them in the answers file', () => {
+  const scopes = tmp('my.scopes.json');
+  writeFileSync(scopes, JSON.stringify([{ name: 'orders:read', description: 'Read orders' }, { name: 'orders:write' }]));
+  const answersIn = tmp('in.json');
+  writeFileSync(answersIn, JSON.stringify({ ...json('presets/example.answers.json'), m2m: [] }));
+  const out = tmp('realm.local.json');
+  cli('--answers', answersIn, '--yes', '--scopes', scopes, '--scopes-mode', 'replace', '--out', out);
+  const realm = JSON.parse(readFileSync(out, 'utf8'));
+  const names = realm.roles.client[API].filter((r) => !r.composite).map((r) => r.name);
+  assert.deepEqual(names, ['orders:read', 'orders:write', ...permissionNames(base).filter(isCore)]);
+  const saved = JSON.parse(readFileSync(out.replace(/\.local\.json$/, '.answers.local.json'), 'utf8'));
+  assert.deepEqual(saved.scopes.list.map((s) => s.name), ['orders:read', 'orders:write']);
+  // Replaying the saved answers gives the same realm.
+  const again = tmp('again.json');
+  cli('--answers', out.replace(/\.local\.json$/, '.answers.local.json'), '--yes', '--out', again);
+  const replayed = JSON.parse(readFileSync(again, 'utf8'));
+  assert.deepEqual(replayed.roles, realm.roles);
+});
+
+test('the CLI with --scopes-preset ef-track writes the bundled template\'s roles', () => {
+  const out = tmp('realm.json');
+  cli('--preset', 'example', '--scopes-preset', 'ef-track', '--out', out);
+  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')).roles.client[API], base.roles.client[API]);
+});
+
+test('the CLI drops M2M permissions that are no longer scopes', () => {
+  const out = tmp('realm.json');
+  cli('--preset', 'example', '--scopes-preset', 'generic-crud', '--out', out);
+  const realm = JSON.parse(readFileSync(out, 'utf8'));
+  for (const u of realm.users.filter((x) => x.username.startsWith('service-account-acme-org-m2m'))) assert.deepEqual(u.clientRoles[API], []);
 });

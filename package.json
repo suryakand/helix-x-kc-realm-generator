@@ -13,12 +13,14 @@
   "exports": {
     ".": "./build-realm.mjs",
     "./package.json": "./package.json",
-    "./templates/*": "./templates/*"
+    "./templates/*": "./templates/*",
+    "./scopes/*": "./scopes/*"
   },
   "files": [
     "build-realm.mjs",
     "generate-realm.mjs",
     "templates",
+    "scopes",
     "presets",
     "README.md",
     "LICENSE"
