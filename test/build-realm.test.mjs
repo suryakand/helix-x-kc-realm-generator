@@ -158,3 +158,45 @@ test('the CLI drops M2M permissions that are no longer scopes', () => {
   const realm = JSON.parse(readFileSync(out, 'utf8'));
   for (const u of realm.users.filter((x) => x.username.startsWith('service-account-acme-org-m2m'))) assert.deepEqual(u.clientRoles[API], []);
 });
+
+test('a realm.theme without themes sets the login and email themes only (the earlier behaviour)', () => {
+  const a = answers();
+  a.realm.theme = 'acme';
+  delete a.realm.themes;
+  const realm = buildRealm(a, base);
+  assert.equal(realm.loginTheme, 'acme');
+  assert.equal(realm.emailTheme, 'acme');
+  assert.ok(!('accountTheme' in realm) && !('adminTheme' in realm));
+});
+
+test('realm.themes sets each page type; empty ones are left to Keycloak\'s default', () => {
+  const a = answers();
+  a.realm.theme = 'acme';
+  a.realm.themes = { account: 'acme-account', admin: '', email: 'acme-mail' };
+  const realm = buildRealm(a, base);
+  assert.equal(realm.loginTheme, 'acme');
+  assert.equal(realm.accountTheme, 'acme-account');
+  assert.equal(realm.emailTheme, 'acme-mail');
+  assert.ok(!('adminTheme' in realm));
+  a.realm.theme = '';
+  a.realm.themes = { account: '', admin: '', email: '' };
+  const plain = buildRealm(a, base);
+  assert.ok(['loginTheme', 'accountTheme', 'adminTheme', 'emailTheme'].every((k) => !(k in plain)));
+});
+
+test('the CLI writes realm.themes and saves them in the answers file', () => {
+  const answersIn = tmp('themes.json');
+  const preset = json('presets/example.answers.json');
+  preset.realm.theme = 'acme';
+  preset.realm.themes = { account: 'acme', admin: 'acme-admin', email: '' };
+  writeFileSync(answersIn, JSON.stringify(preset));
+  const out = tmp('themes.local.json');
+  cli('--answers', answersIn, '--yes', '--out', out);
+  const realm = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual(
+    [realm.loginTheme, realm.accountTheme, realm.adminTheme, realm.emailTheme],
+    ['acme', 'acme', 'acme-admin', undefined],
+  );
+  const saved = JSON.parse(readFileSync(out.replace(/\.local\.json$/, '.answers.local.json'), 'utf8'));
+  assert.deepEqual(saved.realm.themes, preset.realm.themes);
+});

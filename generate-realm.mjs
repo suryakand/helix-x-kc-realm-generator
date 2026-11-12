@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkbox, confirm, input, number, password, select } from '@inquirer/prompts';
 import {
-  applyScopes, buildRealm, CORE_PREFIXES, isCore, mergeScopes, normalizeScope, permissionNames, redactAnswers,
+  applyScopes, buildRealm, CORE_PREFIXES, isCore, mergeScopes, normalizeScope, permissionNames, realmThemes, redactAnswers,
   templateScopes, TENANT_GROUPS, validateScopes,
 } from './build-realm.mjs';
 
@@ -170,6 +170,30 @@ const DEFAULTS = {
 
 // ---------- sections ----------
 
+const THEME_PAGES = [
+  ['account', 'Account pages theme'],
+  ['admin', `Admin console theme (this realm's /admin/<realm>/console only, not master's)`],
+  ['email', 'Email theme'],
+];
+
+/** { account, admin, email } themes, or undefined: the email theme follows the login theme, account/admin use the defaults. */
+async function askThemes(d, theme, validate) {
+  // An answers file from before per-page themes replays as it did then.
+  if (args.yes && !d.themes) return undefined;
+  const all = (t) => Object.fromEntries(THEME_PAGES.map(([k]) => [k, t]));
+  if (theme) {
+    const same = d.themes ? THEME_PAGES.every(([k]) => (d.themes[k] ?? theme) === theme) : true;
+    if (await ask.confirm({ message: `Use "${theme}" for the account pages, admin console and emails too?`, default: same })) return all(theme);
+  } else {
+    const any = THEME_PAGES.some(([k]) => d.themes?.[k]);
+    if (!(await ask.confirm({ message: 'Set a theme for the account pages, admin console or emails?', default: any }))) return undefined;
+  }
+  hint('Empty = Keycloak\'s default theme for that page type.');
+  const out = {};
+  for (const [k, message] of THEME_PAGES) out[k] = await ask.input({ message, default: d.themes?.[k] ?? theme, validate });
+  return out;
+}
+
 async function askRealm(d) {
   section('Realm');
   const kind = await ask.select({
@@ -190,12 +214,17 @@ async function askRealm(d) {
   const providers = args.providers && resolve(process.cwd(), args.providers);
   const jars = providers && existsSync(providers) ? readdirSync(providers).filter((f) => f.endsWith('.jar')) : [];
   if (jars.length) hint(`Theme JARs in ${show(providers)}: ${jars.join(', ')}`);
+  const themeName = (v) => (!v.trim() || NAME.test(v.trim()) ? true : 'letters, digits, . _ - only');
   const theme = await ask.input({
-    message: "Custom login + email theme name (empty = Keycloak's default theme)",
+    message: "Login theme name (empty = Keycloak's default theme)",
     default: d.theme || '',
-    validate: (v) => (!v.trim() || NAME.test(v.trim()) ? true : 'letters, digits, . _ - only'),
+    validate: themeName,
   });
-  if (theme && providers && !jars.length) hint(`Keycloak needs the JAR providing theme "${theme}" in its providers directory, or it falls back to its default.`);
+  const themes = await askThemes(d, theme, themeName);
+  const named = [...new Set([theme, ...Object.values(themes ?? {})].filter(Boolean))];
+  if (named.length && providers && !jars.length) {
+    hint(`Keycloak needs the JAR providing ${named.map((t) => `"${t}"`).join(', ')} in its providers directory, or it falls back to its default.`);
+  }
   const resetPasswordAllowed = await ask.confirm({ message: 'Allow "Forgot password" (needs SMTP)?', default: d.resetPasswordAllowed ?? true });
   const rememberMe = await ask.confirm({ message: 'Show "Remember me"?', default: d.rememberMe ?? false });
   const accessTokenLifespan = await ask.number({ message: 'Access token lifespan (seconds)', default: d.accessTokenLifespan ?? 300, min: 60 });
@@ -206,6 +235,7 @@ async function askRealm(d) {
     publicUrl: new URL(publicUrl).origin,
     sslRequired: kind === 'local' ? 'none' : 'external',
     theme,
+    ...(themes ? { themes } : {}),
     resetPasswordAllowed,
     rememberMe,
     accessTokenLifespan,
@@ -569,7 +599,12 @@ function summary(a) {
     console.log(`   Tenant       ${o.alias}: ${o.members.map((m) => `${m.username}→${m.group}`).join(', ') || 'no members'}`);
   }
   for (const m of a.m2m) console.log(`   M2M client   ${m.clientId} (${m.organization}): ${m.serviceRoles.join(', ') || 'no permissions'}`);
-  console.log(`   Theme        ${a.realm.theme || 'Keycloak default'};  Forgot password ${a.realm.resetPasswordAllowed ? 'on' : 'off'};  SMTP ${a.smtp ? `${a.smtp.host}:${a.smtp.port} from ${a.smtp.from}` : 'not set'}`);
+  const t = realmThemes(a.realm);
+  const themes = Object.keys(t).length
+    ? ['login', 'account', 'admin', 'email'].map((k) => `${k} ${t[`${k}Theme`] ?? 'default'}`).join(', ')
+    : 'Keycloak default';
+  console.log(`   Themes       ${themes}`);
+  console.log(`   Sign-in      Forgot password ${a.realm.resetPasswordAllowed ? 'on' : 'off'};  SMTP ${a.smtp ? `${a.smtp.host}:${a.smtp.port} from ${a.smtp.from}` : 'not set'}`);
 }
 
 function printNext(a, outFile, generated) {

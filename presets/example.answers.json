@@ -7,6 +7,7 @@
     "publicUrl": "http://localhost:8180",
     "sslRequired": "none",
     "theme": "",
+    "themes": { "account": "", "admin": "", "email": "" },
     "resetPasswordAllowed": false,
     "rememberMe": true,
     "accessTokenLifespan": 300

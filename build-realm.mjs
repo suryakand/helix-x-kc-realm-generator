@@ -4,7 +4,9 @@
  *
  * Answers shape (see presets/example.answers.json):
  * {
- *   realm:   { name, displayName, sslRequired, theme, resetPasswordAllowed, rememberMe, accessTokenLifespan },
+ *   realm:   { name, displayName, sslRequired, theme, themes?, resetPasswordAllowed, rememberMe, accessTokenLifespan },
+ *            // theme: the login theme ('' = Keycloak's default). themes?: { account, admin, email }, each a name or '';
+ *            // absent = the email theme follows `theme` and account/admin use Keycloak's defaults.
  *   clients: { api, web, admin, adminSecret, webUrls: [..], cli,
  *              cliId?, claimPrefix?, names?: { api, admin, web } },   // optional: derived from the realm when absent
  *   users:   [{ username, email, firstName, lastName, platformAdmin, password, temporary }],
@@ -161,6 +163,17 @@ export function applyScopes(base, scopes) {
       },
     },
   };
+}
+
+/** The realm's theme fields; empty ones are left out so Keycloak uses its default. */
+export function realmThemes({ theme = '', themes } = {}) {
+  const t = {
+    loginTheme: theme,
+    accountTheme: themes?.account ?? '',
+    adminTheme: themes?.admin ?? '',
+    emailTheme: themes?.email ?? theme,
+  };
+  return Object.fromEntries(Object.entries(t).filter(([, v]) => v));
 }
 
 export function buildRealm(a, base) {
@@ -326,7 +339,7 @@ export function buildRealm(a, base) {
     loginWithEmailAllowed: true,
     accessTokenLifespan: a.realm.accessTokenLifespan,
     organizationsEnabled: true,
-    ...(a.realm.theme ? { loginTheme: a.realm.theme, emailTheme: a.realm.theme } : {}),
+    ...realmThemes(a.realm),
     ...(a.realm.resetPasswordAllowed ? { resetPasswordAllowed: true } : {}),
     ...(a.realm.rememberMe ? { rememberMe: true } : {}),
     ...(smtp ? { smtpServer: smtp } : {}),

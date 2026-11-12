@@ -26,7 +26,7 @@ Node 22+, ESM, one dependency (`@inquirer/prompts`). It does not need Keycloak r
 
 | Asked (Enter accepts the default) | Fixed: from the template, never asked |
 |---|---|
-| **Realm:** local or hosted (hosted → `sslRequired: external`, temporary passwords, no password-grant client by default), realm name (`acme-org`), display name (`Acme Org`), public Keycloak URL, custom login/email theme name (empty = Keycloak's default), "Forgot password", "Remember me", access-token lifespan | The bundles `tenant-admin` / `tenant-member` / `tenant-viewer` (their names and descriptions) |
+| **Realm:** local or hosted (hosted → `sslRequired: external`, temporary passwords, no password-grant client by default), realm name (`acme-org`), display name (`Acme Org`), public Keycloak URL, themes for the login pages, account pages, admin console and emails (empty = Keycloak's default; see [Themes](#themes)), "Forgot password", "Remember me", access-token lifespan | The bundles `tenant-admin` / `tenant-member` / `tenant-viewer` (their names and descriptions) |
 | **Clients:** web app URL(s) (redirect URIs, CORS origins, logout), a password-grant client for curl (dev only), the admin client's secret. Identifiers are derived from the realm name and can be changed: API client `acme-org-api` (the token audience), web client `acme-org-web`, admin client `acme-org-admin`, curl client `acme-org-cli`, M2M claim prefix `acme_org` | Realm role `platform-admin` (all `platform:*` permissions + `tenant-admin`) |
 | **Application scopes:** a predefined set (the template's, `ef-track`, `generic-crud`, none), custom scopes from `--scopes` merged in or replacing it, scopes removed or added, and which bundles get each one | The `tenant:*` and `platform:*` administration permissions and their bundle memberships |
 | **Users:** username, email, names, platform admin or not, password, change at first sign-in. At least one platform admin | All client scopes, including the customised `organization` scope whose mappers put each tenant's id, groups and permissions into the token |
@@ -85,6 +85,26 @@ keycloak:
   in it, or, if you name a theme and it holds none (or does not exist), warns that Keycloak will use its default.
   It is a check only: it looks at file names, not inside the JARs, writes nothing to the realm or answers file, and
   prints nothing with `--yes` or `--preset`.
+
+### Themes
+
+Keycloak themes each kind of page separately, and the generator sets all four on the realm:
+
+| Answer | Realm field | Pages |
+|---|---|---|
+| `realm.theme` | `loginTheme` | sign-in, registration, password reset |
+| `realm.themes.account` | `accountTheme` | the account console (`/realms/<realm>/account`) |
+| `realm.themes.admin` | `adminTheme` | the admin console of **this** realm (`/admin/<realm>/console`) |
+| `realm.themes.email` | `emailTheme` | the emails Keycloak sends |
+
+You are asked for the login theme first, then whether to use it for the other three too; answer no to name each one
+(empty = Keycloak's default for that page type). An answers file without `themes` keeps the earlier behaviour: the
+email theme follows the login theme, and the account and admin consoles use Keycloak's defaults.
+
+- The **master realm** (and so the admin console most administrators use) is not in the realm file, and Keycloak never
+  re-imports it. Theme it with Keycloak's server-wide default theme option, or the admin console / `kcadm.sh`.
+- The account and admin consoles are React applications: a theme can change their logo, styles and messages, not
+  their layout. Check which page types your theme JAR provides.
 
 ## Options
 
